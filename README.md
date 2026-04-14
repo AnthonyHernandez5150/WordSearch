@@ -14,38 +14,35 @@ WordTrail is a modern mobile word-search game built with Flutter and Dart. It is
 - Hint, restart, next-board, and home actions
 - Session stats for clears, streaks, hints, and best times
 
-## Project Location
+## Getting Started
 
-The active working copy should live at:
+Install Flutter, connect an Android device or start an emulator, then run:
 
-```powershell
-C:\dev\WordSearch_local
-```
-
-Avoid editing old Desktop or OneDrive copies. The phone-tested build comes from this folder.
-
-## Fast Phone Test
-
-With the phone plugged in and USB debugging allowed:
-
-```powershell
-C:\Users\mrtig\AppData\Local\Android\Sdk\platform-tools\adb.exe devices
-C:\Users\mrtig\develop\flutter\bin\flutter.bat build apk --debug --no-pub
-C:\Users\mrtig\AppData\Local\Android\Sdk\platform-tools\adb.exe install -r build\app\outputs\flutter-apk\app-debug.apk
-C:\Users\mrtig\AppData\Local\Android\Sdk\platform-tools\adb.exe shell monkey -p com.example.wordsearch -c android.intent.category.LAUNCHER 1
-```
-
-Or run the helper script:
-
-```powershell
-tool\install_phone.bat
+```bash
+flutter pub get
+flutter run
 ```
 
 ## Quality Checks
 
+```bash
+flutter analyze
+flutter build apk --debug --no-pub
+```
+
+## Android Debug Install
+
+After building a debug APK, install it with Android Debug Bridge:
+
+```bash
+adb devices
+adb install -r build/app/outputs/flutter-apk/app-debug.apk
+```
+
+A local helper script is also available for Windows development:
+
 ```powershell
-C:\Users\mrtig\develop\flutter\bin\flutter.bat analyze
-C:\Users\mrtig\develop\flutter\bin\flutter.bat build apk --debug --no-pub
+tool\install_phone.bat
 ```
 
 ## Release Notes To Finish Later
