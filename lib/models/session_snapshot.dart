@@ -22,6 +22,8 @@ class SessionSnapshot {
   const SessionSnapshot({
     required this.boardsCleared,
     required this.cleanStreak,
+    required this.currentDailyStreak,
+    required this.bestDailyStreak,
     required this.totalHintsUsed,
     required this.bestTimes,
     required this.recentVictories,
@@ -29,6 +31,8 @@ class SessionSnapshot {
 
   final int boardsCleared;
   final int cleanStreak;
+  final int currentDailyStreak;
+  final int bestDailyStreak;
   final int totalHintsUsed;
   final Map<Difficulty, Duration> bestTimes;
   final List<VictoryRecord> recentVictories;
@@ -40,10 +44,14 @@ class VictoryOutcome {
   const VictoryOutcome({
     required this.record,
     required this.personalBest,
+    required this.dailyStreakAdvanced,
+    required this.bestDailyStreakSet,
     required this.snapshot,
   });
 
   final VictoryRecord record;
   final bool personalBest;
+  final bool dailyStreakAdvanced;
+  final bool bestDailyStreakSet;
   final SessionSnapshot snapshot;
 }

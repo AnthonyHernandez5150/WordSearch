@@ -1,11 +1,7 @@
 import 'package:flutter/material.dart';
 
 class GlowOrb extends StatelessWidget {
-  const GlowOrb({
-    super.key,
-    required this.color,
-    required this.size,
-  });
+  const GlowOrb({super.key, required this.color, required this.size});
 
   final Color color;
   final double size;

@@ -5,7 +5,7 @@ cd /d "%~dp0.."
 set "ADB=adb"
 set "FLUTTER=flutter"
 set "APK=build\app\outputs\flutter-apk\app-debug.apk"
-set "PACKAGE=com.example.wordsearch"
+set "PACKAGE=com.anthonyhernandez.wordtrailgame"
 
 where %ADB% >nul 2>nul
 if errorlevel 1 (

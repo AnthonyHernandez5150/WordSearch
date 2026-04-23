@@ -1,10 +1,10 @@
 # WordTrail
 
-WordTrail is a modern mobile word-search game built with Flutter and Dart. It is Android-first right now, with a branded dark UI, generated puzzle boards, swipe-based word selection, shaped boards, daily-style play, and difficulty profiles that change how words are hidden.
+WordTrail is a modern mobile word-search game built with Flutter and Dart. It is Android-first right now, with a branded dark UI, generated puzzle boards, swipe-based word selection, shaped boards, daily-style play, saved streaks, and difficulty profiles that change how words are hidden.
 
 ## Current Features
 
-- Branded WordTrail splash and dark mobile UI
+- Branded WordTrail splash, launcher icon, and dark mobile UI
 - Calm, Explorer, and Expert difficulty profiles
 - Curated puzzle topics with mixed word lengths
 - Classic and shaped board styles
@@ -12,7 +12,7 @@ WordTrail is a modern mobile word-search game built with Flutter and Dart. It is
 - Swipe/drag word selection with found-word bursts
 - Persistent lit solved words and board-complete flow
 - Hint, restart, next-board, and home actions
-- Session stats for clears, streaks, hints, and best times
+- Saved progress for clears, daily streaks, clean streaks, hints, and best times
 
 ## Getting Started
 
@@ -45,9 +45,14 @@ A local helper script is also available for Windows development:
 tool\install_phone.bat
 ```
 
-## Release Notes To Finish Later
+## Release Prep
 
-- Replace the debug application id `com.example.wordsearch` before Play Store release.
-- Add release signing instead of debug signing.
-- Decide final free/premium puzzle-pack structure.
-- Add persistent saved progress if the app should remember stats after reinstall.
+- Android application id: `com.anthonyhernandez.wordtrailgame`.
+- Release signing uses `android/key.properties`; see `RELEASE_CHECKLIST.md`.
+- Google Play uploads should use an Android App Bundle (`.aab`).
+- Keep `PRIVACY.md` updated before adding analytics, ads, purchases, reminders, online features, or cloud saves.
+- Decide final free/premium puzzle-pack structure after the first closed test.
+
+## Platform Status
+
+Android is the active launch target. iOS, macOS, Linux, Windows, and web template folders may still contain default Flutter desktop/mobile placeholders and should be cleaned before those platforms are released.

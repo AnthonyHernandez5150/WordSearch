@@ -40,12 +40,14 @@ class _SplashIntroPageState extends State<SplashIntroPage>
       parent: _controller,
       curve: const Interval(0.0, 0.42, curve: Curves.easeOut),
     );
-    _logoScale = Tween<double>(begin: 0.92, end: 1.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic),
-    );
-    _logoLift = Tween<double>(begin: 22, end: 0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic),
-    );
+    _logoScale = Tween<double>(
+      begin: 0.92,
+      end: 1.0,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic));
+    _logoLift = Tween<double>(
+      begin: 22,
+      end: 0,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic));
     _copyFade = CurvedAnimation(
       parent: _controller,
       curve: const Interval(0.32, 1.0, curve: Curves.easeOut),
@@ -67,24 +69,29 @@ class _SplashIntroPageState extends State<SplashIntroPage>
     Navigator.of(context).pushReplacement(
       PageRouteBuilder<void>(
         transitionDuration: const Duration(milliseconds: 240),
-        pageBuilder: (
-          BuildContext context,
-          Animation<double> animation,
-          Animation<double> secondaryAnimation,
-        ) {
-          return widget.child;
-        },
-        transitionsBuilder: (
-          BuildContext context,
-          Animation<double> animation,
-          Animation<double> secondaryAnimation,
-          Widget child,
-        ) {
-          return FadeTransition(
-            opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
-            child: child,
-          );
-        },
+        pageBuilder:
+            (
+              BuildContext context,
+              Animation<double> animation,
+              Animation<double> secondaryAnimation,
+            ) {
+              return widget.child;
+            },
+        transitionsBuilder:
+            (
+              BuildContext context,
+              Animation<double> animation,
+              Animation<double> secondaryAnimation,
+              Widget child,
+            ) {
+              return FadeTransition(
+                opacity: CurvedAnimation(
+                  parent: animation,
+                  curve: Curves.easeOut,
+                ),
+                child: child,
+              );
+            },
       ),
     );
   }
@@ -114,18 +121,12 @@ class _SplashIntroPageState extends State<SplashIntroPage>
                 const Positioned(
                   top: -120,
                   left: -80,
-                  child: _SplashGlow(
-                    color: Color(0x3072F5C8),
-                    size: 320,
-                  ),
+                  child: _SplashGlow(color: Color(0x3072F5C8), size: 320),
                 ),
                 const Positioned(
                   right: -90,
                   bottom: -120,
-                  child: _SplashGlow(
-                    color: Color(0x2E9A5BFF),
-                    size: 340,
-                  ),
+                  child: _SplashGlow(color: Color(0x2E9A5BFF), size: 340),
                 ),
                 Center(
                   child: AnimatedBuilder(
@@ -249,10 +250,7 @@ class _SplashIntroPageState extends State<SplashIntroPage>
 }
 
 class _SplashGlow extends StatelessWidget {
-  const _SplashGlow({
-    required this.color,
-    required this.size,
-  });
+  const _SplashGlow({required this.color, required this.size});
 
   final Color color;
   final double size;

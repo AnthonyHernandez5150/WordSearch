@@ -17,31 +17,19 @@ const Color wtTextMuted = Color(0xCCF5F7FB);
 const LinearGradient wtAppBackgroundGradient = LinearGradient(
   begin: Alignment.topCenter,
   end: Alignment.bottomCenter,
-  colors: <Color>[
-    wtBackgroundTop,
-    wtBackgroundMid,
-    wtBackgroundBottom,
-  ],
+  colors: <Color>[wtBackgroundTop, wtBackgroundMid, wtBackgroundBottom],
 );
 
 const LinearGradient wtBoardGradient = LinearGradient(
   begin: Alignment.topLeft,
   end: Alignment.bottomRight,
-  colors: <Color>[
-    Color(0xFF091523),
-    Color(0xFF102238),
-  ],
+  colors: <Color>[Color(0xFF091523), Color(0xFF102238)],
 );
 
 const LinearGradient wtTrailGradient = LinearGradient(
   begin: Alignment.topLeft,
   end: Alignment.bottomRight,
-  colors: <Color>[
-    wtMint,
-    wtCyan,
-    wtBlue,
-    wtPurple,
-  ],
+  colors: <Color>[wtMint, wtCyan, wtBlue, wtPurple],
 );
 
 const Color wsInk = wtBackground;

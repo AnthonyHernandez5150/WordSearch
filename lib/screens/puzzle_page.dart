@@ -9,6 +9,7 @@ import '../controllers/game_controller.dart';
 import '../models/cell_pos.dart';
 import '../models/difficulty.dart';
 import '../models/generated_board.dart';
+import '../models/paused_puzzle_snapshot.dart';
 import '../models/puzzle_definition.dart';
 import '../models/session_snapshot.dart';
 import '../services/board_generator.dart';
@@ -26,6 +27,7 @@ class PuzzlePage extends StatefulWidget {
     required this.puzzle,
     required this.helpEnabled,
     required this.daily,
+    this.resumeSnapshot,
   });
 
   final GameController controller;
@@ -33,6 +35,7 @@ class PuzzlePage extends StatefulWidget {
   final PuzzleDefinition puzzle;
   final bool helpEnabled;
   final bool daily;
+  final PausedPuzzleSnapshot? resumeSnapshot;
 
   @override
   State<PuzzlePage> createState() => _PuzzlePageState();
@@ -56,11 +59,16 @@ class _PuzzlePageState extends State<PuzzlePage> {
   bool _showingWinSheet = false;
   bool _isProcessingMatch = false;
   bool _isShowingHint = false;
+  bool _isPaused = false;
+  bool _allowRoutePop = false;
   bool _boardCompleted = false;
   bool _finalPulse = false;
   bool _advanceAfterVictorySheet = false;
   bool _homeAfterVictorySheet = false;
+  bool _victoryActionLocked = false;
+  bool _routeTransitioning = false;
   Duration? _completedElapsed;
+  Duration _elapsedOffset = Duration.zero;
   String? _rewardText;
   int _rewardToken = 0;
   Set<CellPos> _spotlightCells = <CellPos>{};
@@ -69,8 +77,13 @@ class _PuzzlePageState extends State<PuzzlePage> {
   @override
   void initState() {
     super.initState();
-    _buildFreshBoard();
-    _startTimer();
+    final PausedPuzzleSnapshot? snapshot = widget.resumeSnapshot;
+    if (snapshot == null) {
+      _buildFreshBoard();
+      _startTimer();
+    } else {
+      _restorePausedBoard(snapshot);
+    }
   }
 
   @override
@@ -110,6 +123,28 @@ class _PuzzlePageState extends State<PuzzlePage> {
       Difficulty.explorer => max(10, widget.puzzle.size),
       Difficulty.expert => max(13, widget.puzzle.size),
     };
+    if (widget.puzzle.shape != null) {
+      final PuzzleDefinition shapedFallback = widget.puzzle.copyWith(
+        words: widget.puzzle.words
+            .take(fallbackWordCount)
+            .toList(growable: false),
+      );
+      try {
+        final GeneratedBoard generated = BoardGenerator.generate(
+          shapedFallback,
+          version: _boardVersion + 1,
+          difficulty: widget.difficulty,
+        );
+        if (_isValidGeneratedBoard(generated, shapedFallback)) {
+          _generated = generated;
+          _activePuzzle = shapedFallback;
+          return;
+        }
+      } on StateError {
+        // Last resort below keeps the app playable if a shape is impossible.
+      }
+    }
+
     final PuzzleDefinition emergencyFallback = widget.puzzle.copyWith(
       shape: null,
       size: fallbackSize,
@@ -186,34 +221,48 @@ class _PuzzlePageState extends State<PuzzlePage> {
       );
     }
 
-    if (puzzle.shape != null) {
-      for (int count = min(words.length, 7); count >= minimum; count--) {
-        candidates.add(
-          puzzle.copyWith(
-            shape: null,
-            size: max(10, puzzle.size),
-            words: words.take(count).toList(growable: false),
-          ),
-        );
-      }
-    }
-
     return candidates;
   }
 
   int _minimumPlayableWordCount(PuzzleDefinition puzzle) {
-    final int preferredMinimum = switch (widget.difficulty) {
-      Difficulty.calm => 4,
-      Difficulty.explorer => 6,
-      Difficulty.expert => 8,
-    };
+    final int preferredMinimum = puzzle.shape != null
+        ? switch (widget.difficulty) {
+            Difficulty.calm => 4,
+            Difficulty.explorer => 5,
+            Difficulty.expert => 5,
+          }
+        : switch (widget.difficulty) {
+            Difficulty.calm => 4,
+            Difficulty.explorer => 6,
+            Difficulty.expert => 8,
+          };
     return min(preferredMinimum, puzzle.words.length);
   }
 
-  void _startTimer() {
-    _stopwatch
-      ..reset()
-      ..start();
+  Duration get _elapsed => _elapsedOffset + _stopwatch.elapsed;
+
+  void _restorePausedBoard(PausedPuzzleSnapshot snapshot) {
+    _generated = snapshot.generatedBoard;
+    _activePuzzle = snapshot.activePuzzle;
+    _foundWords
+      ..clear()
+      ..addAll(snapshot.foundWords);
+    _boardVersion = snapshot.boardVersion;
+    _hintsUsed = snapshot.hintsUsed;
+    _isPaused = true;
+    _hintMessage = 'Paused';
+    _startTimer(elapsedOffset: snapshot.elapsed, startPaused: true);
+  }
+
+  void _startTimer({
+    Duration elapsedOffset = Duration.zero,
+    bool startPaused = false,
+  }) {
+    _elapsedOffset = elapsedOffset;
+    _stopwatch.reset();
+    if (!startPaused) {
+      _stopwatch.start();
+    }
     _ticker?.cancel();
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted && _stopwatch.isRunning) {
@@ -223,7 +272,8 @@ class _PuzzlePageState extends State<PuzzlePage> {
   }
 
   void _restartBoard() {
-    GameFeedback.tap();
+    GameFeedback.soft();
+    widget.controller.clearPausedPuzzle();
     setState(() {
       _boardVersion++;
       _foundWords.clear();
@@ -235,11 +285,15 @@ class _PuzzlePageState extends State<PuzzlePage> {
       _showingWinSheet = false;
       _isProcessingMatch = false;
       _isShowingHint = false;
+      _isPaused = false;
       _boardCompleted = false;
       _finalPulse = false;
       _advanceAfterVictorySheet = false;
       _homeAfterVictorySheet = false;
+      _victoryActionLocked = false;
+      _routeTransitioning = false;
       _completedElapsed = null;
+      _elapsedOffset = Duration.zero;
       _rewardText = null;
       _burstPath = <CellPos>[];
       _spotlightCells = <CellPos>{};
@@ -353,22 +407,23 @@ class _PuzzlePageState extends State<PuzzlePage> {
   CellPos? _snapDirectionFromOffset(Offset delta, double step) {
     final double absDx = delta.dx.abs();
     final double absDy = delta.dy.abs();
+    final double travel = max(absDx, absDy);
     final int rowSign = _axisSign(delta.dy);
     final int colSign = _axisSign(delta.dx);
 
-    if (max(absDx, absDy) < step * 0.22) {
+    if (travel < step * 0.28) {
       return null;
     }
 
-    if (absDx <= step * 0.12) {
+    if (absDx <= step * 0.08) {
       return CellPos(rowSign, 0);
     }
-    if (absDy <= step * 0.12) {
+    if (absDy <= step * 0.08) {
       return CellPos(0, colSign);
     }
 
     final double diagonalRatio = min(absDy, absDx) / max(absDy, absDx);
-    if (diagonalRatio >= 0.34) {
+    if (diagonalRatio >= 0.42) {
       return CellPos(rowSign, colSign);
     }
 
@@ -376,6 +431,45 @@ class _PuzzlePageState extends State<PuzzlePage> {
       return CellPos(rowSign, 0);
     }
     return CellPos(0, colSign);
+  }
+
+  bool _isDiagonalDirection(CellPos direction) {
+    return direction.row != 0 && direction.col != 0;
+  }
+
+  bool _shouldLockDirection({
+    required CellPos direction,
+    required Offset delta,
+    required double step,
+    required List<CellPos> selection,
+  }) {
+    final double travel = max(delta.dx.abs(), delta.dy.abs()) / step;
+    if (_isDiagonalDirection(direction)) {
+      return selection.length >= 2 && travel >= 0.75;
+    }
+    return selection.length >= 3 && travel >= 1.35;
+  }
+
+  bool _shouldCorrectLockedDirection({
+    required CellPos locked,
+    required CellPos candidate,
+    required Offset delta,
+    required double step,
+  }) {
+    if (_isDiagonalDirection(locked) || !_isDiagonalDirection(candidate)) {
+      return false;
+    }
+    final double travel = max(delta.dx.abs(), delta.dy.abs()) / step;
+    if (travel > 2.25) {
+      return false;
+    }
+    final double absDx = delta.dx.abs();
+    final double absDy = delta.dy.abs();
+    if (absDx == 0 || absDy == 0) {
+      return false;
+    }
+    final double diagonalRatio = min(absDy, absDx) / max(absDy, absDx);
+    return diagonalRatio >= 0.48;
   }
 
   int _maxStepsFrom(CellPos start, CellPos direction) {
@@ -512,7 +606,7 @@ class _PuzzlePageState extends State<PuzzlePage> {
   }
 
   void _beginDrag(Offset localPosition, double boardSize) {
-    if (_isProcessingMatch || _boardCompleted) {
+    if (_isPaused || _isProcessingMatch || _boardCompleted) {
       return;
     }
     final CellPos? cell = _cellFromLocal(localPosition, boardSize);
@@ -531,7 +625,7 @@ class _PuzzlePageState extends State<PuzzlePage> {
   }
 
   void _updateDrag(Offset localPosition, double boardSize) {
-    if (_isProcessingMatch || _boardCompleted) {
+    if (_isPaused || _isProcessingMatch || _boardCompleted) {
       return;
     }
     final CellPos? anchor = _dragAnchor;
@@ -542,8 +636,22 @@ class _PuzzlePageState extends State<PuzzlePage> {
     final double step = tile + _boardGap();
     final Offset anchorCenter = _cellCenter(anchor, tile, _boardGap());
     final Offset rawDelta = localPosition - anchorCenter;
-    final CellPos? snappedDirection =
-        _lockedDirection ?? _snapDirectionFromOffset(rawDelta, step);
+    final CellPos? candidateDirection = _snapDirectionFromOffset(
+      rawDelta,
+      step,
+    );
+    CellPos? snappedDirection = _lockedDirection ?? candidateDirection;
+    if (_lockedDirection != null &&
+        candidateDirection != null &&
+        _shouldCorrectLockedDirection(
+          locked: _lockedDirection!,
+          candidate: candidateDirection,
+          delta: rawDelta,
+          step: step,
+        )) {
+      snappedDirection = candidateDirection;
+      _lockedDirection = null;
+    }
     final List<CellPos> nextSelection = snappedDirection == null
         ? <CellPos>[anchor]
         : (_magnetizedWordPath(
@@ -564,7 +672,12 @@ class _PuzzlePageState extends State<PuzzlePage> {
     setState(() {
       if (_lockedDirection == null &&
           snappedDirection != null &&
-          nextSelection.length > 1) {
+          _shouldLockDirection(
+            direction: snappedDirection,
+            delta: rawDelta,
+            step: step,
+            selection: nextSelection,
+          )) {
         _lockedDirection = snappedDirection;
       }
       _selection
@@ -613,7 +726,7 @@ class _PuzzlePageState extends State<PuzzlePage> {
   }
 
   Future<void> _finishDrag() async {
-    if (_isProcessingMatch || _boardCompleted) {
+    if (_isPaused || _isProcessingMatch || _boardCompleted) {
       return;
     }
 
@@ -662,7 +775,7 @@ class _PuzzlePageState extends State<PuzzlePage> {
   }
 
   Future<void> _useHint() async {
-    if (_isShowingHint || _isProcessingMatch || _boardCompleted) {
+    if (_isPaused || _isShowingHint || _isProcessingMatch || _boardCompleted) {
       return;
     }
 
@@ -717,15 +830,66 @@ class _PuzzlePageState extends State<PuzzlePage> {
     });
   }
 
+  void _togglePause() {
+    if (_boardCompleted || _showingWinSheet || _isProcessingMatch) {
+      return;
+    }
+    final bool willPause = !_isPaused;
+    if (willPause) {
+      GameFeedback.pause();
+    } else {
+      GameFeedback.resume();
+    }
+    setState(() {
+      _isPaused = !_isPaused;
+      if (_isPaused) {
+        _stopwatch.stop();
+        _selection.clear();
+        _dragAnchor = null;
+        _lockedDirection = null;
+        _hintMessage = 'Paused';
+      } else {
+        _stopwatch.start();
+        _hintMessage = null;
+      }
+    });
+    if (_isPaused) {
+      _savePausedSnapshot();
+    } else {
+      widget.controller.clearPausedPuzzle();
+    }
+  }
+
+  void _savePausedSnapshot() {
+    if (_boardCompleted) {
+      return;
+    }
+    widget.controller.savePausedPuzzle(
+      PausedPuzzleSnapshot(
+        difficulty: widget.difficulty,
+        requestedPuzzle: widget.puzzle,
+        activePuzzle: _puzzle,
+        generatedBoard: _generated,
+        foundWords: Set<String>.unmodifiable(_foundWords),
+        elapsed: _elapsed,
+        hintsUsed: _hintsUsed,
+        boardVersion: _boardVersion,
+        helpEnabled: widget.helpEnabled,
+        daily: widget.daily,
+      ),
+    );
+  }
+
   Future<void> _completeBoard() async {
     if (_showingWinSheet || _boardCompleted) {
       return;
     }
 
-    final Duration completedElapsed = _stopwatch.elapsed;
+    final Duration completedElapsed = _elapsed;
     _stopwatch.stop();
     _ticker?.cancel();
     GameFeedback.celebrate();
+    widget.controller.clearPausedPuzzle();
     final VictoryOutcome outcome = widget.controller.recordVictory(
       difficulty: widget.difficulty,
       puzzle: _puzzle,
@@ -738,22 +902,25 @@ class _PuzzlePageState extends State<PuzzlePage> {
         .toSet();
 
     setState(() {
+      _isPaused = false;
       _boardCompleted = true;
       _completedElapsed = completedElapsed;
       _showingWinSheet = true;
       _advanceAfterVictorySheet = false;
       _homeAfterVictorySheet = false;
+      _victoryActionLocked = false;
+      _routeTransitioning = false;
       _selection.clear();
       _dragAnchor = null;
       _lockedDirection = null;
       _finalPulse = true;
-      _rewardText = 'Board mastered';
+      _rewardText = 'Puzzle crushed!';
       _rewardToken++;
       _burstPath = solvedCells.toList(growable: false);
       _spotlightCells = solvedCells;
     });
-    _announce('Board cleared', clearAfter: const Duration(milliseconds: 2600));
-    _showSnack('Board cleared!');
+    _announce('Puzzle crushed', clearAfter: const Duration(milliseconds: 3000));
+    _showSnack('Puzzle crushed!');
 
     await Future<void>.delayed(const Duration(milliseconds: 2400));
     if (!mounted) {
@@ -777,6 +944,10 @@ class _PuzzlePageState extends State<PuzzlePage> {
           hintsUsed: _hintsUsed,
           personalBest: outcome.personalBest,
           cleanStreak: outcome.snapshot.cleanStreak,
+          dailyStreak: outcome.snapshot.currentDailyStreak,
+          bestDailyStreak: outcome.snapshot.bestDailyStreak,
+          daily: widget.daily,
+          dailyStreakAdvanced: outcome.dailyStreakAdvanced,
           onNextBoard: () => _closeVictorySheetForNext(sheetContext),
           onBackHome: () => _closeVictorySheetForHome(sheetContext),
         );
@@ -795,24 +966,44 @@ class _PuzzlePageState extends State<PuzzlePage> {
     });
 
     if (shouldAdvance) {
-      _goToNextBoard();
+      _deferRouteChange(_goToNextBoard);
     } else if (shouldGoHome) {
-      _goBackHome();
+      _deferRouteChange(_goBackHome);
     }
   }
 
   void _closeVictorySheetForNext(BuildContext sheetContext) {
+    if (_victoryActionLocked) {
+      return;
+    }
+    _victoryActionLocked = true;
     _advanceAfterVictorySheet = true;
     Navigator.of(sheetContext).pop();
   }
 
   void _closeVictorySheetForHome(BuildContext sheetContext) {
+    if (_victoryActionLocked) {
+      return;
+    }
+    _victoryActionLocked = true;
     _homeAfterVictorySheet = true;
     Navigator.of(sheetContext).pop();
   }
 
+  void _deferRouteChange(VoidCallback action) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _routeTransitioning) {
+        return;
+      }
+      action();
+    });
+  }
+
   void _goToNextBoard({BuildContext? sheetContext}) {
-    GameFeedback.success();
+    if (_routeTransitioning) {
+      return;
+    }
+    GameFeedback.soft();
     if (sheetContext != null) {
       _closeVictorySheetForNext(sheetContext);
       return;
@@ -829,6 +1020,8 @@ class _PuzzlePageState extends State<PuzzlePage> {
     if (!mounted) {
       return;
     }
+    _routeTransitioning = true;
+    widget.controller.clearPausedPuzzle();
     Navigator.of(context).pushReplacement(
       MaterialPageRoute<void>(
         builder: (BuildContext context) {
@@ -845,6 +1038,9 @@ class _PuzzlePageState extends State<PuzzlePage> {
   }
 
   void _goBackHome({BuildContext? sheetContext}) {
+    if (_routeTransitioning) {
+      return;
+    }
     GameFeedback.tap();
     if (sheetContext != null) {
       _closeVictorySheetForHome(sheetContext);
@@ -853,6 +1049,22 @@ class _PuzzlePageState extends State<PuzzlePage> {
     if (!mounted) {
       return;
     }
+    _routeTransitioning = true;
+    widget.controller.clearPausedPuzzle();
+    Navigator.of(context).pop();
+  }
+
+  void _handleBackHome() {
+    GameFeedback.tap();
+    if (!mounted) {
+      return;
+    }
+    if (_isPaused && !_boardCompleted) {
+      _savePausedSnapshot();
+    } else {
+      widget.controller.clearPausedPuzzle();
+    }
+    _allowRoutePop = true;
     Navigator.of(context).pop();
   }
 
@@ -1109,10 +1321,11 @@ class _PuzzlePageState extends State<PuzzlePage> {
       child: Row(
         children: <Widget>[
           Expanded(
-            child: FilledButton.icon(
+            child: _BreathingNextButton(
+              label: 'Next board',
+              icon: Icons.skip_next_rounded,
+              accent: widget.difficulty.accent,
               onPressed: () => _goToNextBoard(),
-              icon: const Icon(Icons.skip_next_rounded),
-              label: const Text('Next board'),
             ),
           ),
           const SizedBox(width: 10),
@@ -1259,7 +1472,7 @@ class _PuzzlePageState extends State<PuzzlePage> {
               accent: widget.difficulty.accent,
             ),
             _CompactTag(
-              label: formatDuration(_completedElapsed ?? _stopwatch.elapsed),
+              label: formatDuration(_completedElapsed ?? _elapsed),
               accent: wsCoral,
             ),
             if (!widget.helpEnabled)
@@ -1295,96 +1508,256 @@ class _PuzzlePageState extends State<PuzzlePage> {
   Widget build(BuildContext context) {
     final double wordBankMinHeight = _wordBankMinHeight();
 
-    return Scaffold(
-      body: DecoratedBox(
-        decoration: const BoxDecoration(gradient: wtAppBackgroundGradient),
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(4, 10, 4, 8),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Row(
-                  children: <Widget>[
-                    IconButton.filledTonal(
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.white.withValues(alpha: 0.12),
-                        foregroundColor: Colors.white,
+    return PopScope(
+      canPop: _allowRoutePop || !_isPaused || _boardCompleted,
+      onPopInvokedWithResult: (bool didPop, Object? result) {
+        if (didPop) {
+          return;
+        }
+        _handleBackHome();
+      },
+      child: Scaffold(
+        body: DecoratedBox(
+          decoration: const BoxDecoration(gradient: wtAppBackgroundGradient),
+          child: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(4, 10, 4, 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Row(
+                    children: <Widget>[
+                      IconButton.filledTonal(
+                        style: IconButton.styleFrom(
+                          backgroundColor: Colors.white.withValues(alpha: 0.12),
+                          foregroundColor: Colors.white,
+                        ),
+                        onPressed: _handleBackHome,
+                        icon: const Icon(Icons.arrow_back_rounded),
                       ),
-                      onPressed: () => Navigator.of(context).pop(),
-                      icon: const Icon(Icons.arrow_back_rounded),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        _puzzle.isShaped
-                            ? '${_puzzle.name}  |  ${_puzzle.shape!.label}  |  ${widget.difficulty.label}${widget.daily ? ' daily' : ''}'
-                            : '${_puzzle.name}  |  ${widget.difficulty.label}${widget.daily ? ' daily' : ''}',
-                        style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w700,
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          _puzzle.isShaped
+                              ? '${_puzzle.name}  |  ${_puzzle.shape!.label}  |  ${widget.difficulty.label}${widget.daily ? ' | Daily Trail' : ''}'
+                              : '${_puzzle.name}  |  ${widget.difficulty.label}${widget.daily ? ' | Daily Trail' : ''}',
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w700,
+                              ),
+                        ),
+                      ),
+                      IconButton.filledTonal(
+                        style: IconButton.styleFrom(
+                          backgroundColor: _isPaused
+                              ? widget.difficulty.accent.withValues(alpha: 0.28)
+                              : Colors.white.withValues(alpha: 0.12),
+                          foregroundColor: Colors.white,
+                        ),
+                        onPressed: _boardCompleted || _showingWinSheet
+                            ? null
+                            : _togglePause,
+                        tooltip: _isPaused ? 'Resume' : 'Pause',
+                        icon: Icon(
+                          _isPaused
+                              ? Icons.play_arrow_rounded
+                              : Icons.pause_rounded,
+                        ),
+                      ),
+                      if (widget.helpEnabled) ...<Widget>[
+                        const SizedBox(width: 8),
+                        IconButton.filledTonal(
+                          style: IconButton.styleFrom(
+                            backgroundColor: Colors.white.withValues(
+                              alpha: 0.12,
                             ),
-                      ),
-                    ),
-                    if (widget.helpEnabled) ...<Widget>[
+                            foregroundColor: Colors.white,
+                          ),
+                          onPressed:
+                              _boardCompleted ||
+                                  _isShowingHint ||
+                                  _isProcessingMatch
+                              ? null
+                              : _useHint,
+                          tooltip: 'Hint',
+                          icon: const Icon(Icons.lightbulb_rounded),
+                        ),
+                      ],
                       const SizedBox(width: 8),
                       IconButton.filledTonal(
                         style: IconButton.styleFrom(
                           backgroundColor: Colors.white.withValues(alpha: 0.12),
                           foregroundColor: Colors.white,
                         ),
-                        onPressed:
-                            _boardCompleted ||
-                                _isShowingHint ||
-                                _isProcessingMatch
-                            ? null
-                            : _useHint,
-                        tooltip: 'Hint',
-                        icon: const Icon(Icons.lightbulb_rounded),
+                        onPressed: _restartBoard,
+                        tooltip: 'Restart',
+                        icon: const Icon(Icons.refresh_rounded),
                       ),
                     ],
-                    const SizedBox(width: 8),
-                    IconButton.filledTonal(
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.white.withValues(alpha: 0.12),
-                        foregroundColor: Colors.white,
-                      ),
-                      onPressed: _restartBoard,
-                      tooltip: 'Restart',
-                      icon: const Icon(Icons.refresh_rounded),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                _buildTopStatusBar(),
-                if (_boardCompleted) ...<Widget>[
-                  const SizedBox(height: 8),
-                  _buildCompletedActions(),
-                ],
-                const SizedBox(height: 4),
-                Expanded(
-                  child: LayoutBuilder(
-                    builder:
-                        (BuildContext context, BoxConstraints constraints) {
-                          final double boardSize = min(
-                            constraints.maxWidth,
-                            max(
-                              0,
-                              constraints.maxHeight - wordBankMinHeight - 6,
-                            ),
-                          ).toDouble();
-                          return Column(
-                            children: <Widget>[
-                              _buildBoard(boardSize),
-                              const SizedBox(height: 6),
-                              Expanded(child: _buildWordBankPanel()),
-                            ],
-                          );
-                        },
                   ),
-                ),
-              ],
+                  const SizedBox(height: 4),
+                  _buildTopStatusBar(),
+                  if (_boardCompleted) ...<Widget>[
+                    const SizedBox(height: 8),
+                    _buildCompletedActions(),
+                  ],
+                  const SizedBox(height: 4),
+                  Expanded(
+                    child: Stack(
+                      children: <Widget>[
+                        if (!_isPaused)
+                          LayoutBuilder(
+                            builder:
+                                (
+                                  BuildContext context,
+                                  BoxConstraints constraints,
+                                ) {
+                                  final double boardSize = min(
+                                    constraints.maxWidth,
+                                    max(
+                                      0,
+                                      constraints.maxHeight -
+                                          wordBankMinHeight -
+                                          6,
+                                    ),
+                                  ).toDouble();
+                                  return Column(
+                                    children: <Widget>[
+                                      _buildBoard(boardSize),
+                                      const SizedBox(height: 6),
+                                      Expanded(child: _buildWordBankPanel()),
+                                    ],
+                                  );
+                                },
+                          )
+                        else
+                          _PausedPlayOverlay(
+                            color: widget.difficulty.accent,
+                            daily: widget.daily,
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PausedPlayOverlay extends StatelessWidget {
+  const _PausedPlayOverlay({required this.color, required this.daily});
+
+  final Color color;
+  final bool daily;
+
+  @override
+  Widget build(BuildContext context) {
+    final String modeLine = daily
+        ? 'Daily Trail is safely tucked away.'
+        : 'This board is safely tucked away.';
+
+    return Positioned.fill(
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: <Color>[
+              wtBackground.withValues(alpha: 0.98),
+              wtSurface.withValues(alpha: 0.98),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(20, 22, 20, 20),
+              decoration: BoxDecoration(
+                color: wtSurfaceElevated,
+                borderRadius: BorderRadius.circular(28),
+                border: Border.all(color: color.withValues(alpha: 0.4)),
+                boxShadow: <BoxShadow>[
+                  BoxShadow(
+                    color: color.withValues(alpha: 0.18),
+                    blurRadius: 30,
+                    offset: const Offset(0, 14),
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  Container(
+                    width: 58,
+                    height: 58,
+                    decoration: BoxDecoration(
+                      gradient: wtTrailGradient,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: const Icon(
+                      Icons.pause_rounded,
+                      color: wtWhite,
+                      size: 34,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  const Text(
+                    'Paused',
+                    style: TextStyle(
+                      color: wtWhite,
+                      fontSize: 24,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '$modeLine Timer stopped. Tap pause again to resume.',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Color(0xCCF5F7FB),
+                      height: 1.35,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: wtCyan.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: wtCyan.withValues(alpha: 0.2)),
+                    ),
+                    child: const Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text(
+                          'Coming soon: bonus puzzle packs',
+                          style: TextStyle(
+                            color: wtWhite,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        SizedBox(height: 4),
+                        Text(
+                          'More themed boards, tougher Expert routes, and special shapes are on the roadmap.',
+                          style: TextStyle(
+                            color: Color(0xB8F5F7FB),
+                            height: 1.3,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -1413,6 +1786,10 @@ class _VictorySheet extends StatelessWidget {
     required this.hintsUsed,
     required this.personalBest,
     required this.cleanStreak,
+    required this.dailyStreak,
+    required this.bestDailyStreak,
+    required this.daily,
+    required this.dailyStreakAdvanced,
     required this.onNextBoard,
     required this.onBackHome,
   });
@@ -1422,12 +1799,28 @@ class _VictorySheet extends StatelessWidget {
   final Duration elapsed;
   final int hintsUsed;
   final bool personalBest;
+  final bool daily;
   final int cleanStreak;
+  final int dailyStreak;
+  final int bestDailyStreak;
+  final bool dailyStreakAdvanced;
   final VoidCallback onNextBoard;
   final VoidCallback onBackHome;
 
   @override
   Widget build(BuildContext context) {
+    final String hintLabel = hintsUsed == 0 ? 'Clean run' : '$hintsUsed hints';
+    final String runLine = hintsUsed == 0
+        ? 'No hints used. That was a clean little victory lap.'
+        : 'Nice solve. You kept the board moving and finished the path.';
+    final String dailyLine = daily
+        ? dailyStreakAdvanced
+              ? dailyStreak == 1
+                    ? 'Daily Trail started.'
+                    : 'Daily Trail extended to $dailyStreak days.'
+              : 'Daily Trail complete. Come back tomorrow to keep it alive.'
+        : 'Regular rotation advanced. Daily Trail is separate and refreshes once per day.';
+
     return SafeArea(
       child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -1436,6 +1829,16 @@ class _VictorySheet extends StatelessWidget {
           decoration: BoxDecoration(
             color: wtSurfaceElevated,
             borderRadius: BorderRadius.circular(30),
+            border: Border.all(
+              color: difficulty.accent.withValues(alpha: 0.28),
+            ),
+            boxShadow: <BoxShadow>[
+              BoxShadow(
+                color: difficulty.accent.withValues(alpha: 0.18),
+                blurRadius: 34,
+                offset: const Offset(0, 16),
+              ),
+            ],
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -1447,37 +1850,62 @@ class _VictorySheet extends StatelessWidget {
                   Positioned(
                     right: -10,
                     top: -18,
-                    child: CelebrationBurst(color: difficulty.accent),
+                    child: CelebrationBurst(
+                      color: difficulty.accent,
+                      size: 150,
+                    ),
                   ),
                   Row(
                     children: <Widget>[
                       Container(
-                        width: 52,
-                        height: 52,
+                        width: 58,
+                        height: 58,
                         decoration: BoxDecoration(
-                          color: difficulty.accent.withValues(alpha: 0.18),
-                          borderRadius: BorderRadius.circular(18),
+                          gradient: wtTrailGradient,
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: <BoxShadow>[
+                            BoxShadow(
+                              color: difficulty.accent.withValues(alpha: 0.34),
+                              blurRadius: 24,
+                              spreadRadius: 1,
+                            ),
+                          ],
                         ),
-                        child: Icon(
-                          Icons.emoji_events_rounded,
-                          color: difficulty.accent,
+                        child: const Icon(
+                          Icons.auto_awesome_rounded,
+                          color: wtWhite,
                         ),
                       ),
                       const SizedBox(width: 14),
                       Expanded(
-                        child: Text(
-                          'Board cleared',
-                          style: Theme.of(context).textTheme.headlineSmall
-                              ?.copyWith(color: Colors.white),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            Text(
+                              daily
+                                  ? 'Daily Trail cleared!'
+                                  : 'Puzzle crushed!',
+                              style: Theme.of(context).textTheme.headlineSmall
+                                  ?.copyWith(color: Colors.white),
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              '${puzzle.words.length} words found in ${puzzle.name}',
+                              style: const TextStyle(
+                                color: Color(0xBFF5F7FB),
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ],
                   ),
                 ],
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 14),
               Text(
-                '${puzzle.name} is done. This is the kind of loop we can keep polishing into a really satisfying mobile game.',
+                '$runLine $dailyLine Your trail stays lit if you want to admire it, or you can jump into the next regular board.',
                 style: const TextStyle(color: Color(0xCCFFFFFF), height: 1.5),
               ),
               const SizedBox(height: 18),
@@ -1491,7 +1919,7 @@ class _VictorySheet extends StatelessWidget {
                     textColor: Colors.white,
                   ),
                   StatusChip(
-                    label: '$hintsUsed hints',
+                    label: hintLabel,
                     accent: wsTeal,
                     textColor: Colors.white,
                   ),
@@ -1501,34 +1929,43 @@ class _VictorySheet extends StatelessWidget {
                     textColor: Colors.white,
                   ),
                   StatusChip(
-                    label: 'Clean streak $cleanStreak',
+                    label: dailyStreak > 0
+                        ? 'Daily ${dailyStreak}d'
+                        : 'Daily trail',
                     accent: wsGold,
+                    textColor: Colors.white,
+                  ),
+                  StatusChip(
+                    label: 'Clean $cleanStreak',
+                    accent: wsTeal,
+                    textColor: Colors.white,
+                  ),
+                  StatusChip(
+                    label: 'Best ${bestDailyStreak}d',
+                    accent: wtMint,
                     textColor: Colors.white,
                   ),
                 ],
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 22),
               Row(
                 children: <Widget>[
                   Expanded(
-                    child: FilledButton(
-                      onPressed: () {
-                        GameFeedback.success();
-                        onNextBoard();
-                      },
-                      child: const Text('Next board'),
+                    child: _BreathingNextButton(
+                      label: daily ? 'Regular board' : 'Next board',
+                      icon: Icons.skip_next_rounded,
+                      accent: difficulty.accent,
+                      onPressed: onNextBoard,
                     ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: OutlinedButton(
-                      onPressed: () {
-                        GameFeedback.tap();
-                        onBackHome();
-                      },
+                      onPressed: onBackHome,
                       style: OutlinedButton.styleFrom(
                         foregroundColor: Colors.white,
                         side: const BorderSide(color: Color(0x66FFFFFF)),
+                        padding: const EdgeInsets.symmetric(vertical: 15),
                       ),
                       child: const Text('Back home'),
                     ),
@@ -1538,6 +1975,82 @@ class _VictorySheet extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _BreathingNextButton extends StatefulWidget {
+  const _BreathingNextButton({
+    required this.label,
+    required this.icon,
+    required this.accent,
+    required this.onPressed,
+  });
+
+  final String label;
+  final IconData icon;
+  final Color accent;
+  final VoidCallback onPressed;
+
+  @override
+  State<_BreathingNextButton> createState() => _BreathingNextButtonState();
+}
+
+class _BreathingNextButtonState extends State<_BreathingNextButton>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (BuildContext context, Widget? child) {
+        final double glow = Curves.easeInOut.transform(_controller.value);
+        return Transform.scale(
+          scale: 1 + glow * 0.018,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(999),
+              boxShadow: <BoxShadow>[
+                BoxShadow(
+                  color: widget.accent.withValues(alpha: 0.18 + glow * 0.28),
+                  blurRadius: 16 + glow * 16,
+                  spreadRadius: glow * 2,
+                ),
+              ],
+            ),
+            child: child,
+          ),
+        );
+      },
+      child: FilledButton.icon(
+        onPressed: widget.onPressed,
+        style: FilledButton.styleFrom(
+          backgroundColor: wtWhite,
+          foregroundColor: wsInk,
+          padding: const EdgeInsets.symmetric(vertical: 15),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(999),
+          ),
+        ),
+        icon: Icon(widget.icon),
+        label: Text(widget.label),
       ),
     );
   }

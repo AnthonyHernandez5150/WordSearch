@@ -41,6 +41,10 @@ class PuzzleCatalog {
     return byIndex(difficulty, _dayNumber(date));
   }
 
+  static PuzzleDefinition featuredDaily(DateTime date) {
+    return byIndex(Difficulty.explorer, _dayNumber(date));
+  }
+
   static List<PuzzleDefinition> _puzzlesFor(Difficulty difficulty) {
     final List<PuzzleDefinition>? puzzles = _catalog[difficulty];
     if (puzzles == null || puzzles.isEmpty) {

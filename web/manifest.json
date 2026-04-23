@@ -1,6 +1,6 @@
 {
-    "name": "wordsearch",
-    "short_name": "wordsearch",
+    "name": "WordTrail",
+    "short_name": "WordTrail",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

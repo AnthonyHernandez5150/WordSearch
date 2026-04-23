@@ -2,11 +2,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 
 class CelebrationBurst extends StatelessWidget {
-  const CelebrationBurst({
-    super.key,
-    required this.color,
-    this.size = 120,
-  });
+  const CelebrationBurst({super.key, required this.color, this.size = 120});
 
   final Color color;
   final double size;

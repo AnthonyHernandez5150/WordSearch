@@ -89,16 +89,8 @@ ThemeData buildAppTheme() {
         fontWeight: FontWeight.w700,
         color: wtWhite,
       ),
-      bodyLarge: TextStyle(
-        fontSize: 16,
-        height: 1.45,
-        color: wtTextMuted,
-      ),
-      bodyMedium: TextStyle(
-        fontSize: 14,
-        height: 1.4,
-        color: wtTextMuted,
-      ),
+      bodyLarge: TextStyle(fontSize: 16, height: 1.45, color: wtTextMuted),
+      bodyMedium: TextStyle(fontSize: 14, height: 1.4, color: wtTextMuted),
       bodySmall: TextStyle(
         fontSize: 12,
         height: 1.35,

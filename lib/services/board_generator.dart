@@ -35,6 +35,8 @@ class BoardGenerator {
       );
       final Map<String, List<CellPos>> paths = <String, List<CellPos>>{};
       final Map<_Direction, int> directionUse = <_Direction, int>{};
+      final Map<int, int> regionUse = <int, int>{};
+      final Map<int, int> startRegionUse = <int, int>{};
       bool success = true;
 
       for (final String word in words) {
@@ -69,6 +71,8 @@ class BoardGenerator {
                   size: puzzle.size,
                   direction: direction,
                   directionUse: directionUse,
+                  regionUse: regionUse,
+                  startRegionUse: startRegionUse,
                   shaped: puzzle.isShaped,
                   random: random,
                   profile: profile,
@@ -93,6 +97,16 @@ class BoardGenerator {
         paths[word] = placement.path;
         directionUse.update(
           placement.direction,
+          (int value) => value + 1,
+          ifAbsent: () => 1,
+        );
+        regionUse.update(
+          _pathRegion(placement.path, puzzle.size),
+          (int value) => value + 1,
+          ifAbsent: () => 1,
+        );
+        startRegionUse.update(
+          _cellRegion(placement.path.first, puzzle.size),
           (int value) => value + 1,
           ifAbsent: () => 1,
         );
@@ -143,14 +157,21 @@ class BoardGenerator {
     required int size,
     required _Direction direction,
     required Map<_Direction, int> directionUse,
+    required Map<int, int> regionUse,
+    required Map<int, int> startRegionUse,
     required bool shaped,
     required Random random,
     required _DifficultyProfile profile,
   }) {
     final int overlap = _overlapCount(path, word, draft);
     final int directionCount = directionUse[direction] ?? 0;
+    final int pathRegion = _pathRegion(path, size);
+    final int startRegion = _cellRegion(path.first, size);
+    final int regionCount = regionUse[pathRegion] ?? 0;
+    final int startRegionCount = startRegionUse[startRegion] ?? 0;
     final int extraOverlap = max(0, overlap - profile.freeOverlap);
     final int newCells = word.length - overlap;
+    final double shapedScale = shaped ? 0.55 : 1.0;
     double score = random.nextDouble();
 
     score += min(overlap, profile.freeOverlap) * profile.overlapReward;
@@ -158,6 +179,15 @@ class BoardGenerator {
     score += newCells * profile.newCellReward;
     score += _separationScore(path, draft, size) * profile.spreadWeight;
     score -= _neighborPressure(path, draft) * profile.neighborPenalty;
+    score -=
+        _localDensity(path, draft) * profile.localDensityPenalty * shapedScale;
+    score -=
+        _centerCrowding(path, draft, size) *
+        profile.centerCrowdingPenalty *
+        shapedScale;
+    score -= regionCount * profile.regionRepeatPenalty * shapedScale;
+    score -= startRegionCount * profile.startRegionRepeatPenalty * shapedScale;
+    score += (profile.underusedRegionBonus / (1 + regionCount)) * shapedScale;
     score += _directionScore(direction, profile);
     score -= directionCount * profile.directionRepeatPenalty;
     score -= _outerBandRatio(path, size) * profile.outerBandPenalty;
@@ -329,6 +359,96 @@ class BoardGenerator {
     return total / path.length;
   }
 
+  static int _pathRegion(List<CellPos> path, int size) {
+    final double rowAverage =
+        path.fold<double>(0, (double total, CellPos cell) => total + cell.row) /
+        path.length;
+    final double colAverage =
+        path.fold<double>(0, (double total, CellPos cell) => total + cell.col) /
+        path.length;
+    return _regionFor(rowAverage, colAverage, size);
+  }
+
+  static int _cellRegion(CellPos cell, int size) {
+    return _regionFor(cell.row.toDouble(), cell.col.toDouble(), size);
+  }
+
+  static int _regionFor(double row, double col, int size) {
+    final int rowBand = min(2, (row * 3 / size).floor());
+    final int colBand = min(2, (col * 3 / size).floor());
+    return rowBand * 3 + colBand;
+  }
+
+  static int _localDensity(List<CellPos> path, List<List<String?>> draft) {
+    final Set<CellPos> pathCells = path.toSet();
+    final Set<CellPos> nearbyOccupied = <CellPos>{};
+    for (final CellPos cell in path) {
+      for (int row = cell.row - 2; row <= cell.row + 2; row++) {
+        for (int col = cell.col - 2; col <= cell.col + 2; col++) {
+          if (row < 0 ||
+              row >= draft.length ||
+              col < 0 ||
+              col >= draft[row].length) {
+            continue;
+          }
+          if ((row - cell.row).abs() + (col - cell.col).abs() > 2) {
+            continue;
+          }
+          final CellPos neighbor = CellPos(row, col);
+          if (!pathCells.contains(neighbor) && draft[row][col] != null) {
+            nearbyOccupied.add(neighbor);
+          }
+        }
+      }
+    }
+    return nearbyOccupied.length;
+  }
+
+  static double _centerCrowding(
+    List<CellPos> path,
+    List<List<String?>> draft,
+    int size,
+  ) {
+    final int low = (size * 0.30).floor();
+    final int high = (size * 0.70).ceil() - 1;
+    int pathCenterCells = 0;
+    for (final CellPos cell in path) {
+      if (cell.row >= low &&
+          cell.row <= high &&
+          cell.col >= low &&
+          cell.col <= high) {
+        pathCenterCells++;
+      }
+    }
+    if (pathCenterCells == 0) {
+      return 0;
+    }
+
+    int occupiedCenterCells = 0;
+    int centerCapacity = 0;
+    for (int row = low; row <= high; row++) {
+      for (int col = low; col <= high; col++) {
+        if (row < 0 ||
+            row >= draft.length ||
+            col < 0 ||
+            col >= draft[row].length) {
+          continue;
+        }
+        centerCapacity++;
+        if (draft[row][col] != null) {
+          occupiedCenterCells++;
+        }
+      }
+    }
+    if (centerCapacity == 0) {
+      return 0;
+    }
+
+    final double pathCenterRatio = pathCenterCells / path.length;
+    final double occupiedRatio = occupiedCenterCells / centerCapacity;
+    return pathCenterRatio * occupiedRatio * 10;
+  }
+
   static List<CellPos> _candidateStarts(
     int size,
     int length,
@@ -494,6 +614,11 @@ class BoardGenerator {
     score += _directionScore(direction, profile) * 0.65;
     score += _separationScore(path, draft, size) * profile.spreadWeight * 0.5;
     score -= _outerBandRatio(path, size) * profile.outerBandPenalty * 0.55;
+    score -= _localDensity(path, draft) * profile.localDensityPenalty * 0.35;
+    score -=
+        _centerCrowding(path, draft, size) *
+        profile.centerCrowdingPenalty *
+        0.35;
     score -= _occupiedCount(path, draft) * 0.6;
     return score;
   }
@@ -569,6 +694,11 @@ class _DifficultyProfile {
     required this.outerStartPenalty,
     required this.longStraightPenalty,
     required this.centerDistancePenalty,
+    required this.localDensityPenalty,
+    required this.regionRepeatPenalty,
+    required this.startRegionRepeatPenalty,
+    required this.underusedRegionBonus,
+    required this.centerCrowdingPenalty,
     required this.rightPenalty,
     required this.downPenalty,
     required this.verticalPenalty,
@@ -593,6 +723,11 @@ class _DifficultyProfile {
   final double outerStartPenalty;
   final double longStraightPenalty;
   final double centerDistancePenalty;
+  final double localDensityPenalty;
+  final double regionRepeatPenalty;
+  final double startRegionRepeatPenalty;
+  final double underusedRegionBonus;
+  final double centerCrowdingPenalty;
   final double rightPenalty;
   final double downPenalty;
   final double verticalPenalty;
@@ -610,8 +745,8 @@ class _DifficultyProfile {
         overlapReward: 2.4,
         extraOverlapPenalty: 0.4,
         newCellReward: 0.05,
-        spreadWeight: 0.15,
-        neighborPenalty: 0.02,
+        spreadWeight: 0.32,
+        neighborPenalty: 0.04,
         directionRepeatPenalty: 1.3,
         outerBandPenalty: -0.45,
         edgeStartPenalty: -0.8,
@@ -619,6 +754,11 @@ class _DifficultyProfile {
         outerStartPenalty: -0.35,
         longStraightPenalty: 1.2,
         centerDistancePenalty: 0.0,
+        localDensityPenalty: 0.03,
+        regionRepeatPenalty: 0.28,
+        startRegionRepeatPenalty: 0.22,
+        underusedRegionBonus: 0.34,
+        centerCrowdingPenalty: 0.08,
         rightPenalty: -2.2,
         downPenalty: -1.4,
         verticalPenalty: -0.3,
@@ -628,52 +768,62 @@ class _DifficultyProfile {
         decoyCount: 0,
       ),
       Difficulty.explorer => const _DifficultyProfile(
-        attempts: 160,
-        pickWindow: 6,
+        attempts: 190,
+        pickWindow: 5,
         freeOverlap: 1,
         overlapReward: 1.5,
         extraOverlapPenalty: 1.5,
         newCellReward: 0.12,
-        spreadWeight: 0.7,
-        neighborPenalty: 0.12,
-        directionRepeatPenalty: 3.0,
-        outerBandPenalty: 1.6,
-        edgeStartPenalty: 1.2,
-        edgeEndPenalty: 0.7,
-        outerStartPenalty: 1.0,
-        longStraightPenalty: 3.2,
-        centerDistancePenalty: 0.06,
-        rightPenalty: 1.6,
-        downPenalty: 2.7,
-        verticalPenalty: 0.8,
-        diagonalBonus: 2.2,
-        reverseBonus: 2.0,
-        backwardsDiagonalBonus: 1.8,
+        spreadWeight: 1.2,
+        neighborPenalty: 0.14,
+        directionRepeatPenalty: 3.4,
+        outerBandPenalty: 1.75,
+        edgeStartPenalty: 1.45,
+        edgeEndPenalty: 0.9,
+        outerStartPenalty: 1.25,
+        longStraightPenalty: 4.0,
+        centerDistancePenalty: 0.0,
+        localDensityPenalty: 0.13,
+        regionRepeatPenalty: 1.05,
+        startRegionRepeatPenalty: 0.9,
+        underusedRegionBonus: 1.45,
+        centerCrowdingPenalty: 0.95,
+        rightPenalty: 2.1,
+        downPenalty: 3.4,
+        verticalPenalty: 1.2,
+        diagonalBonus: 2.8,
+        reverseBonus: 2.6,
+        backwardsDiagonalBonus: 2.7,
         decoyCount: 0,
       ),
       Difficulty.expert => const _DifficultyProfile(
-        attempts: 220,
-        pickWindow: 4,
+        attempts: 280,
+        pickWindow: 3,
         freeOverlap: 1,
-        overlapReward: 0.8,
-        extraOverlapPenalty: 3.8,
-        newCellReward: 0.18,
-        spreadWeight: 1.35,
-        neighborPenalty: 0.26,
+        overlapReward: 0.85,
+        extraOverlapPenalty: 4.6,
+        newCellReward: 0.24,
+        spreadWeight: 2.75,
+        neighborPenalty: 0.28,
         directionRepeatPenalty: 4.4,
-        outerBandPenalty: 4.8,
-        edgeStartPenalty: 3.8,
-        edgeEndPenalty: 1.7,
-        outerStartPenalty: 4.0,
-        longStraightPenalty: 7.0,
-        centerDistancePenalty: 0.02,
-        rightPenalty: 4.4,
-        downPenalty: 7.8,
-        verticalPenalty: 3.2,
-        diagonalBonus: 5.2,
-        reverseBonus: 4.8,
-        backwardsDiagonalBonus: 5.8,
-        decoyCount: 2,
+        outerBandPenalty: 2.15,
+        edgeStartPenalty: 2.7,
+        edgeEndPenalty: 1.4,
+        outerStartPenalty: 2.35,
+        longStraightPenalty: 8.5,
+        centerDistancePenalty: 0.0,
+        localDensityPenalty: 0.36,
+        regionRepeatPenalty: 3.1,
+        startRegionRepeatPenalty: 2.85,
+        underusedRegionBonus: 4.1,
+        centerCrowdingPenalty: 3.6,
+        rightPenalty: 5.0,
+        downPenalty: 8.5,
+        verticalPenalty: 4.4,
+        diagonalBonus: 6.0,
+        reverseBonus: 5.8,
+        backwardsDiagonalBonus: 7.2,
+        decoyCount: 3,
       ),
     };
   }

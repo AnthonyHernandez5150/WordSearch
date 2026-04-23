@@ -43,3 +43,11 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+# Generated local Flutter environment files
+/ios/Flutter/Generated.xcconfig
+/ios/Flutter/flutter_export_environment.sh
+/macos/Flutter/ephemeral/
+# Android signing secrets
+/android/key.properties
+*.jks
+*.keystore

@@ -2,11 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../app/app_colors.dart';
+import '../app/formatters.dart';
 import '../controllers/game_controller.dart';
 import '../models/board_shape.dart';
 import '../models/board_style.dart';
 import '../models/difficulty.dart';
+import '../models/paused_puzzle_snapshot.dart';
 import '../models/puzzle_definition.dart';
+import '../models/session_snapshot.dart';
 import '../services/game_feedback.dart';
 import '../widgets/glow_orb.dart';
 import 'puzzle_page.dart';
@@ -22,13 +25,13 @@ class HomePage extends StatelessWidget {
       animation: controller,
       builder: (BuildContext context, Widget? child) {
         final Difficulty selectedDifficulty = controller.selectedDifficulty;
+        final Difficulty dailyDifficulty = controller.dailyDifficulty;
         final PuzzleDefinition selectedTopic = controller.selectedTopicFor(
           selectedDifficulty,
         );
         final PuzzleDefinition configuredPuzzle = controller
             .configuredPuzzleFor(selectedDifficulty);
-        final PuzzleDefinition dailyPuzzle = controller
-            .configuredDailyPuzzleFor(selectedDifficulty);
+        final PuzzleDefinition dailyPuzzle = controller.configuredDailyPuzzle();
         final List<PuzzleDefinition> topics = controller.themesFor(
           selectedDifficulty,
         );
@@ -40,10 +43,12 @@ class HomePage extends StatelessWidget {
           selectedDifficulty,
           puzzle: selectedTopic,
         );
-        final bool dailyCleared = controller.isDailyCleared(selectedDifficulty);
+        final bool dailyCleared = controller.isDailyClearedToday;
         final BoardStyle selectedBoardStyle = controller.selectedBoardStyle;
         final BoardShapeDefinition selectedShape = controller.selectedShape;
         final List<BoardShapeDefinition> shapes = controller.availableShapes;
+        final SessionSnapshot snapshot = controller.snapshot;
+        final PausedPuzzleSnapshot? pausedPuzzle = controller.pausedPuzzle;
 
         return Scaffold(
           backgroundColor: Colors.transparent,
@@ -91,7 +96,10 @@ class HomePage extends StatelessWidget {
                                     configuredPuzzle: configuredPuzzle,
                                     topics: topics,
                                     shapes: shapes,
+                                    snapshot: snapshot,
+                                    pausedPuzzle: pausedPuzzle,
                                     helpEnabled: controller.helpEnabled,
+                                    soundEnabled: controller.soundEnabled,
                                     dailyCleared: dailyCleared,
                                     selectedWordCount: selectedWordCount,
                                     wordCounts: wordCounts,
@@ -104,6 +112,13 @@ class HomePage extends StatelessWidget {
                                     onSelectWordCount:
                                         controller.selectWordCount,
                                     onHelpChanged: controller.setHelpEnabled,
+                                    onSoundChanged: controller.setSoundEnabled,
+                                    onResumePaused: pausedPuzzle == null
+                                        ? null
+                                        : () => _resumePausedPuzzle(
+                                            context,
+                                            pausedPuzzle,
+                                          ),
                                     onNewGame: () => _openPuzzle(
                                       context,
                                       difficulty: selectedDifficulty,
@@ -112,7 +127,7 @@ class HomePage extends StatelessWidget {
                                     ),
                                     onDaily: () => _openPuzzle(
                                       context,
-                                      difficulty: selectedDifficulty,
+                                      difficulty: dailyDifficulty,
                                       puzzle: dailyPuzzle,
                                       helpEnabled: controller.helpEnabled,
                                       daily: true,
@@ -140,7 +155,8 @@ class HomePage extends StatelessWidget {
     required bool helpEnabled,
     bool daily = false,
   }) {
-    GameFeedback.tap();
+    GameFeedback.soft();
+    controller.clearPausedPuzzle();
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (BuildContext context) {
@@ -150,6 +166,27 @@ class HomePage extends StatelessWidget {
             puzzle: puzzle,
             helpEnabled: helpEnabled,
             daily: daily,
+          );
+        },
+      ),
+    );
+  }
+
+  void _resumePausedPuzzle(
+    BuildContext context,
+    PausedPuzzleSnapshot pausedPuzzle,
+  ) {
+    GameFeedback.resume();
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (BuildContext context) {
+          return PuzzlePage(
+            controller: controller,
+            difficulty: pausedPuzzle.difficulty,
+            puzzle: pausedPuzzle.requestedPuzzle,
+            helpEnabled: pausedPuzzle.helpEnabled,
+            daily: pausedPuzzle.daily,
+            resumeSnapshot: pausedPuzzle,
           );
         },
       ),
@@ -166,7 +203,10 @@ class _QuickSetupCard extends StatelessWidget {
     required this.configuredPuzzle,
     required this.topics,
     required this.shapes,
+    required this.snapshot,
+    required this.pausedPuzzle,
     required this.helpEnabled,
+    required this.soundEnabled,
     required this.dailyCleared,
     required this.selectedWordCount,
     required this.wordCounts,
@@ -176,6 +216,8 @@ class _QuickSetupCard extends StatelessWidget {
     required this.onSelectDifficulty,
     required this.onSelectWordCount,
     required this.onHelpChanged,
+    required this.onSoundChanged,
+    required this.onResumePaused,
     required this.onNewGame,
     required this.onDaily,
   });
@@ -187,7 +229,10 @@ class _QuickSetupCard extends StatelessWidget {
   final PuzzleDefinition configuredPuzzle;
   final List<PuzzleDefinition> topics;
   final List<BoardShapeDefinition> shapes;
+  final SessionSnapshot snapshot;
+  final PausedPuzzleSnapshot? pausedPuzzle;
   final bool helpEnabled;
+  final bool soundEnabled;
   final bool dailyCleared;
   final int selectedWordCount;
   final List<int> wordCounts;
@@ -197,30 +242,24 @@ class _QuickSetupCard extends StatelessWidget {
   final ValueChanged<Difficulty> onSelectDifficulty;
   final ValueChanged<int> onSelectWordCount;
   final ValueChanged<bool> onHelpChanged;
+  final ValueChanged<bool> onSoundChanged;
+  final VoidCallback? onResumePaused;
   final VoidCallback onNewGame;
   final VoidCallback onDaily;
 
   @override
   Widget build(BuildContext context) {
+    final int selectedIndex = topics.indexWhere(
+      (PuzzleDefinition topic) => topic.name == selectedTopic.name,
+    );
+    final int rotationPosition = selectedIndex == -1 ? 1 : selectedIndex + 1;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
         Row(
           children: <Widget>[
-            Container(
-              width: 54,
-              height: 54,
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: wtWhite.withValues(alpha: 0.06),
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(color: const Color(0x2AF5F7FB)),
-              ),
-              child: Image.asset(
-                'assets/branding/wordtrail_logo.png',
-                fit: BoxFit.contain,
-              ),
-            ),
+            const _BrandIcon(size: 54),
             const SizedBox(width: 14),
             Expanded(
               child: Column(
@@ -259,15 +298,23 @@ class _QuickSetupCard extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 22),
-        const _HomeBrandStamp(),
-        const SizedBox(height: 20),
-        _SectionLabel(label: 'Topic'),
+        if (pausedPuzzle != null && onResumePaused != null) ...<Widget>[
+          _ResumePausedCard(
+            snapshot: pausedPuzzle!,
+            onResume: onResumePaused!,
+            accent: difficulty.accent,
+          ),
+          const SizedBox(height: 22),
+        ],
+        _StreakPanel(snapshot: snapshot),
+        const SizedBox(height: 22),
+        _SectionLabel(label: 'Puzzle rotation'),
         const SizedBox(height: 10),
         DropdownButtonFormField<PuzzleDefinition>(
           initialValue: selectedTopic,
           dropdownColor: wtSurfaceElevated,
           iconEnabledColor: Colors.white,
-          decoration: _fieldDecoration(),
+          decoration: _fieldDecoration('Choose a puzzle pack'),
           style: const TextStyle(
             color: Colors.white,
             fontSize: 16,
@@ -286,6 +333,14 @@ class _QuickSetupCard extends StatelessWidget {
             GameFeedback.tap();
             onSelectTopic(value);
           },
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Regular play: board $rotationPosition of ${topics.length} in ${difficulty.label}. Next board keeps moving through this rotation.',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            color: const Color(0xB8F5F7FB),
+            height: 1.3,
+          ),
         ),
         const SizedBox(height: 22),
         _SectionLabel(label: 'Difficulty'),
@@ -337,7 +392,7 @@ class _QuickSetupCard extends StatelessWidget {
             initialValue: selectedShape,
             dropdownColor: wtSurfaceElevated,
             iconEnabledColor: Colors.white,
-            decoration: _fieldDecoration(),
+            decoration: _fieldDecoration('Choose a shape'),
             style: const TextStyle(
               color: Colors.white,
               fontSize: 16,
@@ -385,43 +440,37 @@ class _QuickSetupCard extends StatelessWidget {
         ),
         const SizedBox(height: 22),
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           decoration: BoxDecoration(
             color: Colors.white.withValues(alpha: 0.08),
             borderRadius: BorderRadius.circular(22),
           ),
-          child: Row(
+          child: Column(
             children: <Widget>[
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    const Text(
-                      'Hints',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      helpEnabled ? 'On during play' : 'Off for a clean run',
-                      style: const TextStyle(color: Color(0xCCFFFFFF)),
-                    ),
-                  ],
-                ),
-              ),
-              Switch.adaptive(
+              _SettingsToggleRow(
+                title: 'Hints',
+                subtitle: helpEnabled
+                    ? 'On during play'
+                    : 'Off for a clean run',
                 value: helpEnabled,
-                activeThumbColor: difficulty.accent,
-                onChanged: (bool value) {
-                  GameFeedback.tap();
-                  onHelpChanged(value);
-                },
+                accent: difficulty.accent,
+                onChanged: onHelpChanged,
+              ),
+              const Divider(color: Color(0x1FFFFFFF), height: 1),
+              _SettingsToggleRow(
+                title: 'Sound effects',
+                subtitle: soundEnabled
+                    ? 'Clicks and win sounds on'
+                    : 'Quiet mode on',
+                value: soundEnabled,
+                accent: wtCyan,
+                onChanged: onSoundChanged,
               ),
             ],
           ),
         ),
+        const SizedBox(height: 18),
+        _DailyTrailNote(dailyCleared: dailyCleared),
         const Spacer(),
         Row(
           children: <Widget>[
@@ -459,7 +508,7 @@ class _QuickSetupCard extends StatelessWidget {
                   size: 18,
                 ),
                 label: Text(
-                  dailyCleared ? 'Daily cleared' : 'Daily puzzle',
+                  dailyCleared ? 'Daily done' : 'Daily Trail',
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
@@ -470,11 +519,11 @@ class _QuickSetupCard extends StatelessWidget {
     );
   }
 
-  InputDecoration _fieldDecoration() {
+  InputDecoration _fieldDecoration(String hintText) {
     return InputDecoration(
       filled: true,
       fillColor: Colors.white.withValues(alpha: 0.1),
-      hintText: 'Choose a topic',
+      hintText: hintText,
       hintStyle: const TextStyle(color: Color(0xB3FFFFFF)),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(18),
@@ -492,45 +541,353 @@ class _QuickSetupCard extends StatelessWidget {
   }
 }
 
-class _HomeBrandStamp extends StatelessWidget {
-  const _HomeBrandStamp();
+class _DailyTrailNote extends StatelessWidget {
+  const _DailyTrailNote({required this.dailyCleared});
+
+  final bool dailyCleared;
 
   @override
   Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: Container(
-        width: 78,
-        height: 78,
-        padding: const EdgeInsets.all(10),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(26),
-          gradient: const LinearGradient(
-            colors: <Color>[wtMint, wtCyan, wtBlue, wtPurple],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: wtCyan.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: wtCyan.withValues(alpha: 0.22)),
+      ),
+      child: Row(
+        children: <Widget>[
+          Icon(
+            dailyCleared
+                ? Icons.verified_rounded
+                : Icons.calendar_today_rounded,
+            color: wtCyan,
+            size: 20,
           ),
-          boxShadow: <BoxShadow>[
-            BoxShadow(
-              color: wtCyan.withValues(alpha: 0.22),
-              blurRadius: 26,
-              spreadRadius: 1,
-              offset: const Offset(0, 10),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              dailyCleared
+                  ? 'Daily Trail cleared. Regular boards still rotate below.'
+                  : 'Daily Trail is one shared puzzle each day, separate from the regular board rotation.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: const Color(0xCCF5F7FB),
+                height: 1.3,
+              ),
             ),
-          ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ResumePausedCard extends StatelessWidget {
+  const _ResumePausedCard({
+    required this.snapshot,
+    required this.onResume,
+    required this.accent,
+  });
+
+  final PausedPuzzleSnapshot snapshot;
+  final VoidCallback onResume;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: accent.withValues(alpha: 0.34)),
+        boxShadow: <BoxShadow>[
+          BoxShadow(
+            color: accent.withValues(alpha: 0.1),
+            blurRadius: 22,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Row(
+        children: <Widget>[
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: accent.withValues(alpha: 0.2),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: const Icon(
+              Icons.pause_circle_filled_rounded,
+              color: wtWhite,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  'Paused game waiting',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    color: wtWhite,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${snapshot.activePuzzle.name} | ${snapshot.difficulty.label} | ${formatDuration(snapshot.elapsed)}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: const Color(0xBFF5F7FB),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          FilledButton.icon(
+            onPressed: onResume,
+            style: FilledButton.styleFrom(
+              backgroundColor: wtWhite,
+              foregroundColor: wsInk,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+            ),
+            icon: const Icon(Icons.play_arrow_rounded, size: 18),
+            label: const Text('Resume'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsToggleRow extends StatelessWidget {
+  const _SettingsToggleRow({
+    required this.title,
+    required this.subtitle,
+    required this.value,
+    required this.accent,
+    required this.onChanged,
+  });
+
+  final String title;
+  final String subtitle;
+  final bool value;
+  final Color accent;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: <Widget>[
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  style: const TextStyle(color: Color(0xCCFFFFFF)),
+                ),
+              ],
+            ),
+          ),
+          Switch.adaptive(
+            value: value,
+            activeThumbColor: accent,
+            onChanged: (bool nextValue) {
+              GameFeedback.tap();
+              onChanged(nextValue);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BrandIcon extends StatelessWidget {
+  const _BrandIcon({required this.size});
+
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final double outerRadius = size * 0.33;
+    final double innerRadius = size * 0.24;
+
+    return Container(
+      width: size,
+      height: size,
+      padding: EdgeInsets.all(size * 0.12),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(outerRadius),
+        gradient: const LinearGradient(
+          colors: <Color>[wtMint, wtCyan, wtBlue, wtPurple],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
         ),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: wsInk.withValues(alpha: 0.94),
-            borderRadius: BorderRadius.circular(20),
+        boxShadow: <BoxShadow>[
+          BoxShadow(
+            color: wtCyan.withValues(alpha: 0.18),
+            blurRadius: 20,
+            spreadRadius: 1,
+            offset: const Offset(0, 8),
           ),
-          child: Padding(
-            padding: const EdgeInsets.all(7),
-            child: Image.asset(
-              'assets/branding/wordtrail_logo.png',
-              fit: BoxFit.contain,
-            ),
+        ],
+      ),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: wsInk.withValues(alpha: 0.94),
+          borderRadius: BorderRadius.circular(innerRadius),
+        ),
+        child: Padding(
+          padding: EdgeInsets.all(size * 0.09),
+          child: Image.asset(
+            'assets/branding/wordtrail_logo.png',
+            fit: BoxFit.contain,
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _StreakPanel extends StatelessWidget {
+  const _StreakPanel({required this.snapshot});
+
+  final SessionSnapshot snapshot;
+
+  @override
+  Widget build(BuildContext context) {
+    final int dailyStreak = snapshot.currentDailyStreak;
+    final String headline = dailyStreak > 0
+        ? '$dailyStreak ${_dayLabel(dailyStreak)} trail'
+        : 'Start today';
+    final String subtitle = dailyStreak > 0
+        ? 'Finish tomorrow\'s Daily Trail to keep it alive.'
+        : 'Clear the Daily Trail to begin your streak.';
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: wtSurfaceElevated.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: const Color(0x26F5F7FB)),
+        boxShadow: <BoxShadow>[
+          BoxShadow(
+            color: wtCyan.withValues(alpha: 0.08),
+            blurRadius: 22,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  gradient: wtTrailGradient,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: const Icon(
+                  Icons.local_fire_department_rounded,
+                  color: wtWhite,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      headline,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        color: wtWhite,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      subtitle,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: const Color(0xA8F5F7FB),
+                        height: 1.25,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: <Widget>[
+              _ProgressPill(
+                label: 'Best ${snapshot.bestDailyStreak}d',
+                accent: wtMint,
+              ),
+              _ProgressPill(
+                label: 'Clean ${snapshot.cleanStreak}',
+                accent: wtCyan,
+              ),
+              _ProgressPill(
+                label: '${snapshot.boardsCleared} boards',
+                accent: wtPurple,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _dayLabel(int count) => count == 1 ? 'day' : 'days';
+}
+
+class _ProgressPill extends StatelessWidget {
+  const _ProgressPill({required this.label, required this.accent});
+
+  final String label;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.13),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: accent.withValues(alpha: 0.24)),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(
+          color: wtWhite,
+          fontSize: 12,
+          fontWeight: FontWeight.w800,
         ),
       ),
     );

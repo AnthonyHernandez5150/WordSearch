@@ -60,11 +60,7 @@ class BoardLatticePainter extends CustomPainter {
         Offset(offset, size.height),
         linePaint,
       );
-      canvas.drawLine(
-        Offset(0, offset),
-        Offset(size.width, offset),
-        linePaint,
-      );
+      canvas.drawLine(Offset(0, offset), Offset(size.width, offset), linePaint);
     }
   }
 
